@@ -398,6 +398,43 @@
             font-size: 0.9rem;
         }
 
+        .answer-feedback {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 4rem;
+            font-weight: bold;
+            pointer-events: none;
+            opacity: 0;
+            z-index: 10;
+        }
+
+        .answer-feedback.correct {
+            color: var(--success);
+            animation: feedbackPop 0.5s ease-out;
+        }
+
+        .answer-feedback.wrong {
+            color: var(--error);
+            animation: feedbackShake 0.5s ease-out;
+        }
+
+        @keyframes feedbackPop {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+            50% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+        }
+
+        @keyframes feedbackShake {
+            0% { opacity: 0; transform: translate(-50%, -50%) scale(0.5); }
+            20% { opacity: 1; transform: translate(-50%, -50%) scale(1.2); }
+            40% { transform: translate(-60%, -50%) scale(1); }
+            60% { transform: translate(-40%, -50%) scale(1); }
+            80% { transform: translate(-55%, -50%) scale(1); }
+            100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+        }
+
         .result-card {
             text-align: center;
             padding: 30px 20px;
@@ -453,6 +490,48 @@
             justify-content: center;
             gap: 10px;
             margin-bottom: 20px;
+        }
+
+        .confirm-item {
+            padding: 12px 0;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+        }
+
+        .confirm-item:last-child {
+            border-bottom: none;
+        }
+
+        .confirm-check {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .check-icon {
+            width: 24px;
+            height: 24px;
+            border: 2px solid var(--primary);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--primary);
+            font-size: 14px;
+            transition: all 0.2s;
+        }
+
+        .confirm-item.checked .check-icon {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .confirm-item.checked .check-icon::after {
+            content: '✓';
+        }
+
+        .confirm-item:not(.checked) .check-icon::after {
+            content: '';
         }
 
         @media (min-width: 768px) {
@@ -527,7 +606,46 @@
             </div>
         </div>
 
-        <button id="btn-start" class="btn">开始测试</button>
+        <button id="btn-start" class="btn">下一步</button>
+    </div>
+
+    <!-- 确认页 -->
+    <div id="page-confirm" class="page">
+        <h1>测试准备</h1>
+
+        <div class="card">
+            <h2>请确认以下条件</h2>
+
+            <div class="confirm-item">
+                <div class="confirm-check" id="check-env">
+                    <span class="check-icon">○</span>
+                    <span>光线充足，环境明亮</span>
+                </div>
+            </div>
+
+            <div class="confirm-item">
+                <div class="confirm-check" id="check-distance">
+                    <span class="check-icon">○</span>
+                    <span>测试距离准确（<span id="confirm-distance">5</span>米）</span>
+                </div>
+            </div>
+
+            <div class="confirm-item">
+                <div class="confirm-check" id="check-screen">
+                    <span class="check-icon">○</span>
+                    <span>屏幕亮度已调至最高</span>
+                </div>
+            </div>
+
+            <div class="confirm-item">
+                <div class="confirm-check" id="check-calibration">
+                    <span class="check-icon">○</span>
+                    <span>已完成屏幕校准</span>
+                </div>
+            </div>
+        </div>
+
+        <button id="btn-confirm" class="btn">开始测试</button>
     </div>
 
     <!-- 预选页 -->
@@ -573,6 +691,7 @@
 
         <div class="test-area">
             <canvas id="test-canvas" class="e-canvas" width="300" height="300"></canvas>
+            <div id="answer-feedback" class="answer-feedback"></div>
         </div>
 
         <div class="direction-btns">
@@ -636,6 +755,18 @@
             mobile: { defaultDistance: 2.5, calWidth: 25, name: '硬币', hint: '将硬币贴在屏幕上，拖动滑块使参考线与硬币直径对齐', coinMode: true }
         };
 
+        // 测试状态（用于楼梯算法）
+        const testState = {
+            levelIndex: 0,           // 当前等级
+            questionIndex: 0,        // 当前等级的题目序号
+            correctCount: 0,         // 当前等级正确数
+            totalCorrect: 0,         // 累计正确数（用于终止判断）
+            wrongInRow: 0,           // 连续错误数
+            targetDirection: 0,
+            answers: [],
+            started: false           // 是否已开始测试
+        };
+
         // 应用状态
         const state = {
             device: 'pc',
@@ -644,13 +775,7 @@
             preVision: 5.0,
             currentEye: 'right',
             results: { left: null, right: null },
-            test: {
-                levelIndex: 0,
-                questionIndex: 0,
-                correctCount: 0,
-                targetDirection: 0,
-                answers: []
-            }
+            isTesting: false         // 是否正在进行测试
         };
 
         // DOM 元素
@@ -661,6 +786,8 @@
             detectDevice();
             setupEventListeners();
             updateCalibrationUI();
+            $('btn-confirm').disabled = true;
+            $('btn-confirm').textContent = '请确认全部条件';
         }
 
         // 设备检测
@@ -716,8 +843,38 @@
                 state.distance = parseFloat($('distance-input').value) || 5;
             });
 
-            // 开始测试
-            $('btn-start').addEventListener('click', startTest);
+            // 开始测试 - 跳转到确认页
+            $('btn-start').addEventListener('click', () => {
+                state.distance = parseFloat($('distance-input').value) || 5;
+                $('confirm-distance').textContent = state.distance;
+                showPage('page-confirm');
+            });
+
+            // 确认页复选框
+            document.querySelectorAll('.confirm-item').forEach(item => {
+                item.addEventListener('click', () => {
+                    item.classList.toggle('checked');
+                    updateConfirmButton();
+                });
+            });
+
+            // 确认开始测试
+            $('btn-confirm').addEventListener('click', () => {
+                const allChecked = document.querySelectorAll('.confirm-item.checked').length === 4;
+                if (allChecked) {
+                    state.currentEye = 'right';
+                    state.results = { left: null, right: null };
+                    showPage('page-preselect');
+                    updatePreselectUI();
+                }
+            });
+
+            // 更新确认按钮状态
+            function updateConfirmButton() {
+                const allChecked = document.querySelectorAll('.confirm-item.checked').length === 4;
+                $('btn-confirm').disabled = !allChecked;
+                $('btn-confirm').textContent = allChecked ? '开始测试' : '请确认全部条件';
+            }
 
             // 预选滑块
             $('vision-slider').addEventListener('input', updatePreview);
@@ -783,8 +940,8 @@
             ctx.save();
             ctx.translate(width / 2, height / 2);
 
-            // 旋转角度：0=上, 1=下, 2=右, 3=左
-            const rotations = [0, 180, 90, 270];
+            // 旋转角度：0=上, 1=下, 2=右, 3=左（基础E开口向右）
+            const rotations = [270, 90, 0, 180];
             ctx.rotate(rotations[direction] * Math.PI / 180);
 
             ctx.fillStyle = '#333';
@@ -806,14 +963,6 @@
             const level = VISION_LEVELS[levelIndex];
             const heightMM = (state.distance * 1.4544) / level.decimal;
             return mmToPx(heightMM);
-        }
-
-        // 开始测试
-        function startTest() {
-            state.currentEye = 'right';
-            state.results = { left: null, right: null };
-            showPage('page-preselect');
-            updatePreselectUI();
         }
 
         // 显示页面
@@ -853,17 +1002,21 @@
             drawE(canvas, eSize, 0);
         }
 
-        // 确认预选并开始测试
+        // 确认预选并开始测试（标准阶梯法）
         function confirmPreselect() {
-            state.test = {
-                levelIndex: Math.max(0, VISION_LEVELS.findIndex(l => l.score === state.preVision) - 2),
-                questionIndex: 0,
-                correctCount: 0,
-                targetDirection: Math.floor(Math.random() * 4),
-                answers: []
-            };
+            const preIndex = VISION_LEVELS.findIndex(l => l.score === state.preVision);
+            const startIndex = Math.max(0, Math.min(13, preIndex + 2)); // 从预选+2级开始
 
-            if (state.test.levelIndex < 0) state.test.levelIndex = 0;
+            // 重置测试状态
+            testState.levelIndex = startIndex;
+            testState.questionIndex = 0;
+            testState.correctCount = 0;
+            testState.totalCorrect = 0;
+            testState.wrongInRow = 0;
+            testState.targetDirection = Math.floor(Math.random() * 4);
+            testState.answers = [];
+            testState.started = true;
+            state.isTesting = true;
 
             showPage('page-test');
             updateTestUI();
@@ -871,8 +1024,7 @@
 
         // 更新测试UI
         function updateTestUI() {
-            const test = state.test;
-            const level = VISION_LEVELS[test.levelIndex];
+            const level = VISION_LEVELS[testState.levelIndex];
 
             // 更新眼睛标识
             const eyeBadge = $('test-eye-badge');
@@ -883,7 +1035,7 @@
             $('cover-hint').textContent = state.currentEye === 'right' ? '请遮挡左眼，注视前方E字' : '请遮挡右眼，注视前方E字';
 
             // 计算E字尺寸并绘制
-            const eSize = getESize(test.levelIndex);
+            const eSize = getESize(testState.levelIndex);
             const canvas = $('test-canvas');
             const maxSize = 280;
             const scale = Math.min(1, maxSize / eSize);
@@ -892,33 +1044,38 @@
             canvas.style.width = (eSize * scale) + 'px';
             canvas.style.height = (eSize * scale) + 'px';
 
-            drawE(canvas, eSize, test.targetDirection);
+            drawE(canvas, eSize, testState.targetDirection);
 
-            // 更新进度
-            const totalQuestions = 3;
-            const progress = ((test.questionIndex) / totalQuestions) * 100;
+            // 更新进度（显示已答题目数）
+            const progress = Math.min(100, (testState.questionIndex / 15) * 100);
             $('progress-fill').style.width = progress + '%';
 
             // 更新状态文字
-            $('test-status').textContent = `第 ${test.questionIndex + 1}/${totalQuestions} 题 · 当前: ${level.score}`;
+            $('test-status').textContent = `已答 ${testState.questionIndex} 题 · 当前: ${level.score}`;
         }
 
-        // 处理答案
+        // 处理答案 - 标准阶梯法
         function handleAnswer(direction) {
-            const test = state.test;
-            const isCorrect = direction === test.targetDirection;
+            if (!testState.started) return;
 
-            // 记录答案
-            test.answers.push(isCorrect);
-            test.correctCount += isCorrect ? 1 : 0;
+            const isCorrect = direction === testState.targetDirection;
+
+            testState.answers.push(isCorrect);
+            testState.totalCorrect += isCorrect ? 1 : 0;
 
             // 显示反馈
             const canvas = $('test-canvas');
+            const feedback = $('answer-feedback');
             canvas.classList.remove('correct', 'wrong');
-            void canvas.offsetWidth; // 触发重绘
+            void canvas.offsetWidth;
             canvas.classList.add(isCorrect ? 'correct' : 'wrong');
 
-            // 错误时震动（手机端）
+            // 大字体反馈
+            feedback.textContent = isCorrect ? '✓' : '✗';
+            feedback.classList.remove('correct', 'wrong');
+            void feedback.offsetWidth;
+            feedback.classList.add(isCorrect ? 'correct' : 'wrong');
+
             if (!isCorrect && navigator.vibrate) {
                 navigator.vibrate(100);
             }
@@ -926,53 +1083,55 @@
             // 延迟后继续
             setTimeout(() => {
                 canvas.classList.remove('correct', 'wrong');
-                nextQuestion();
-            }, 400);
+                feedback.classList.remove('correct', 'wrong');
+                processAnswer(isCorrect);
+            }, 500);
         }
 
-        // 下一题或下一级
-        function nextQuestion() {
-            const test = state.test;
-            test.questionIndex++;
+        // 处理答案结果（阶梯算法核心）
+        function processAnswer(isCorrect) {
+            const levelCount = VISION_LEVELS.length;
 
-            if (test.questionIndex >= 3) {
-                // 本级测试完成
-                if (test.correctCount >= 2) {
-                    // 通过，向下级推进
-                    test.levelIndex++;
-                    if (test.levelIndex >= VISION_LEVELS.length) {
-                        finishEyeTest();
-                        return;
-                    }
-                } else {
-                    // 未通过，结束
-                    finishEyeTest();
-                    return;
+            if (isCorrect) {
+                // 答对：向上一级
+                testState.wrongInRow = 0;
+                if (testState.levelIndex < levelCount - 1) {
+                    testState.levelIndex++;
                 }
-
-                // 重置级测试
-                test.questionIndex = 0;
-                test.correctCount = 0;
-                test.answers = [];
+            } else {
+                // 答错：向下一级（如果有）
+                testState.wrongInRow++;
+                if (testState.levelIndex > 0) {
+                    testState.levelIndex--;
+                }
             }
 
-            // 随机新方向
-            test.targetDirection = Math.floor(Math.random() * 4);
+            // 终止判断：连续答错2题
+            if (testState.wrongInRow >= 2) {
+                finishEyeTest();
+                return;
+            }
+
+            testState.questionIndex++;
+            testState.targetDirection = Math.floor(Math.random() * 4);
             updateTestUI();
         }
 
         // 结束当前眼测试
         function finishEyeTest() {
-            const level = VISION_LEVELS[Math.max(0, state.test.levelIndex - (state.test.correctCount >= 2 ? 0 : 1))];
+            // 阶梯法：取连续答错时的上一级为最终视力
+            const resultIndex = testState.levelIndex < VISION_LEVELS.length - 1
+                ? testState.levelIndex + 1
+                : testState.levelIndex;
+            const level = VISION_LEVELS[Math.max(0, resultIndex)];
             state.results[state.currentEye] = level;
+            state.isTesting = false;
 
             if (state.currentEye === 'right') {
-                // 开始左眼测试
                 state.currentEye = 'left';
                 showPage('page-preselect');
                 updatePreselectUI();
             } else {
-                // 测试完成，显示结果
                 showResult();
             }
         }
@@ -995,8 +1154,13 @@
         function resetTest() {
             state.results = { left: null, right: null };
             state.currentEye = 'right';
-            showPage('page-preselect');
-            updatePreselectUI();
+            // 重置确认页的复选框
+            document.querySelectorAll('.confirm-item').forEach(item => {
+                item.classList.remove('checked');
+            });
+            $('btn-confirm').disabled = true;
+            $('btn-confirm').textContent = '请确认全部条件';
+            showPage('page-setup');
         }
 
         // 启动
